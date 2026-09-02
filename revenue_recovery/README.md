@@ -92,6 +92,24 @@ Optional: set `ANTHROPIC_API_KEY` before running `main.py` to have
 (`claude-sonnet-4-6`) instead of using the offline templates. The pipeline
 runs fully offline without it.
 
+## Web UI (live demo)
+
+For a live, "agent working" demo instead of reading a console dump, there's a
+FastAPI + browser front end that wraps the exact same pipeline modules above
+(no logic is duplicated — it imports `generate_data`, `risk_model`, `policy`,
+`messenger`, `main` directly):
+
+```bash
+cd revenue_recovery/webapp
+../../venv/bin/uvicorn server:app --reload --port 8000
+```
+
+Then open http://localhost:8000. Click **New Batch** to generate a fresh
+random batch, then **Run Agent** to watch it stream through each transaction
+live (action, probability, expected value, reasoning, message), with a
+summary dashboard, a revenue chart, an audit-trail CSV download, a model
+calibration tab, and a live guardrail-test-results tab.
+
 ## Outputs
 
 - `recovery_audit_trail.csv` — one row per transaction: action, predicted

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Revenue Recovery Agent</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Revenue Recovery Agent</h1>
+      <span class="tag">AI Revenue Recovery &middot; Buildathon Track 03</span>
+    </div>
+    <div class="controls">
+      <span id="status"><span class="status-dot" id="statusDot"></span><span id="statusText">idle</span></span>
+      <button id="newBatchBtn">New Batch</button>
+      <button id="runBtn" class="primary">Run Agent</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h2>Live Agent Trace</h2>
+      <div id="trace"><div class="empty-hint">Click "Run Agent" to watch it process the batch, transaction by transaction.</div></div>
+    </section>
+
+    <section>
+      <div class="panel" style="margin-bottom:24px;">
+        <h2>Batch Summary</h2>
+        <div class="stat-grid">
+          <div class="stat-card risk"><div class="label">Revenue at risk</div><div class="value" id="statAtRisk">&mdash;</div></div>
+          <div class="stat-card recovered"><div class="label">Revenue recovered</div><div class="value" id="statRecovered">&mdash;</div></div>
+          <div class="stat-card"><div class="label">Recovery rate</div><div class="value" id="statRate">&mdash;</div></div>
+          <div class="stat-card"><div class="label">Transactions</div><div class="value" id="statCount">&mdash;</div></div>
+          <div class="stat-card"><div class="label">Compliance stops</div><div class="value" id="statHardStop">&mdash;</div></div>
+          <div class="stat-card"><div class="label">Give-ups</div><div class="value" id="statGiveUp">&mdash;</div></div>
+        </div>
+        <div class="bar-chart" id="riskVsRecoveredChart"></div>
+        <div class="footer-actions">
+          <a href="/api/audit.csv" download><button>Download Audit Trail (CSV)</button></a>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="tabs">
+          <button class="tab-btn active" data-tab="by-code">Recovered by Code</button>
+          <button class="tab-btn" data-tab="calibration">Model Calibration</button>
+          <button class="tab-btn" data-tab="guardrails">Guardrail Tests</button>
+        </div>
+
+        <div class="tab-content active" id="tab-by-code">
+          <div class="bar-chart" id="byCodeChart"><div class="empty-hint">Run the agent to see a breakdown.</div></div>
+        </div>
+
+        <div class="tab-content" id="tab-calibration">
+          <div id="calibrationContent"><div class="empty-hint">Loading on first view...</div></div>
+        </div>
+
+        <div class="tab-content" id="tab-guardrails">
+          <div id="guardrailsContent"><div class="empty-hint">Loading on first view...</div></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

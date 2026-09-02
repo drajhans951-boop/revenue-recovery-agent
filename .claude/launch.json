@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "revenue-recovery-webapp",
+      "runtimeExecutable": "venv/bin/uvicorn",
+      "runtimeArgs": ["server:app", "--app-dir", "revenue_recovery/webapp", "--port", "8000"],
+      "port": 8000
+    }
+  ]
+}
