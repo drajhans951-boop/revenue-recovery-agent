@@ -89,7 +89,7 @@ async def _run_stream():
         d = decide(txn_dict, models)
         message = generate_message(d.action, txn["preferred_lang"], txn["amount"], txn["failure_code"])
         recovered = simulate_actual_outcome(d.action, txn["failure_code"], int(txn["retry_count"]),
-                                             _simulation_rng)
+                                             _simulation_rng, txn["payment_method"], bool(txn["is_subscription"]))
 
         row = {
             "txn_id": d.txn_id,

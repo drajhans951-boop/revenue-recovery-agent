@@ -17,11 +17,11 @@ def models():
     return fit_risk_models(historical)
 
 
-def test_lost_stolen_card_never_retried_even_with_huge_amount_and_favorable_history(models):
+def test_blocked_instrument_never_retried_even_with_huge_amount_and_favorable_history(models):
     txn = dict(
         txn_id="BREAK1",
         amount=10_000_000,       # absurdly large amount, would dominate any EV calc
-        failure_code="lost_stolen_card",
+        failure_code="debit_instrument_blocked",
         hours_since_failure=48,  # "favorable" timing for a normal code
         retry_count=0,           # first attempt, nothing counting against it
     )
@@ -47,7 +47,7 @@ def test_mandate_revoked_never_retried_even_with_huge_amount_and_favorable_histo
 
 @pytest.mark.parametrize("failure_code,amount", [
     ("insufficient_funds", 50000),
-    ("network_timeout", 1),
+    ("payment_timed_out", 1),
     ("do_not_honor", 999999),
 ])
 def test_max_retries_reached_gives_up_regardless_of_amount_or_code(models, failure_code, amount):

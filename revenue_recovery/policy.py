@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 from risk_model import predict_proba
 
-COMPLIANCE_HARD_STOP_CODES = {"lost_stolen_card", "mandate_revoked"}
+COMPLIANCE_HARD_STOP_CODES = {"debit_instrument_blocked", "mandate_revoked"}
 MAX_RETRY_COUNT = 3
 COOLDOWN_HOURS = 4
 MIN_PROB_TO_ACT = 0.05
@@ -60,18 +60,20 @@ def _candidate_actions(hours_since_failure: float, retry_count: int, amount: flo
 
 
 def _score_candidate(action: str, models: dict, failure_code: str, hours_since_failure: float,
-                      retry_count: int, amount: float):
+                      retry_count: int, amount: float, payment_method: str, is_subscription: bool):
     """Return (predicted_prob, expected_value) for one candidate action."""
     if action == "retry_0h":
-        prob = predict_proba(models, failure_code, 0, retry_count)
+        prob = predict_proba(models, failure_code, 0, retry_count, payment_method, is_subscription)
     elif action == "retry_4h":
-        prob = predict_proba(models, failure_code, 4, retry_count)
+        prob = predict_proba(models, failure_code, 4, retry_count, payment_method, is_subscription)
     elif action == "retry_24h":
-        prob = predict_proba(models, failure_code, 24, retry_count)
+        prob = predict_proba(models, failure_code, 24, retry_count, payment_method, is_subscription)
     elif action == "send_reminder_alt_method":
-        prob = predict_proba(models, failure_code, hours_since_failure, retry_count) * ALT_METHOD_MULTIPLIER
+        prob = predict_proba(models, failure_code, hours_since_failure, retry_count,
+                              payment_method, is_subscription) * ALT_METHOD_MULTIPLIER
     elif action == "escalate_human":
-        prob = min(1.0, predict_proba(models, failure_code, hours_since_failure, retry_count) * ESCALATE_MULTIPLIER)
+        prob = min(1.0, predict_proba(models, failure_code, hours_since_failure, retry_count,
+                                       payment_method, is_subscription) * ESCALATE_MULTIPLIER)
     else:
         raise ValueError(f"Unknown action: {action}")
 
@@ -81,12 +83,14 @@ def _score_candidate(action: str, models: dict, failure_code: str, hours_since_f
 
 def decide(txn: dict, models: dict) -> Decision:
     """txn is expected to have: txn_id, amount, failure_code,
-    hours_since_failure, retry_count."""
+    hours_since_failure, retry_count, payment_method, is_subscription."""
     txn_id = txn["txn_id"]
     amount = float(txn["amount"])
     failure_code = txn["failure_code"]
     hours_since_failure = float(txn["hours_since_failure"])
     retry_count = int(txn["retry_count"])
+    payment_method = txn.get("payment_method", "upi")
+    is_subscription = bool(txn.get("is_subscription", False))
 
     # --- HARD GUARDRAILS: evaluated first, return immediately, no EV at all ---
     if failure_code in COMPLIANCE_HARD_STOP_CODES:
@@ -97,8 +101,8 @@ def decide(txn: dict, models: dict) -> Decision:
             expected_value=0.0,
             reasoning=(
                 f"Hard compliance guardrail: failure_code='{failure_code}' is a permanent "
-                "stop condition (lost/stolen card or revoked mandate). No retry or contact "
-                "is ever permitted, regardless of amount or history. No expected-value "
+                "stop condition (blocked payment instrument or revoked mandate). No retry or "
+                "contact is ever permitted, regardless of amount or history. No expected-value "
                 "calculation was performed."
             ),
         )
@@ -119,7 +123,8 @@ def decide(txn: dict, models: dict) -> Decision:
     # --- Build candidate menu (soft guardrails applied here) ---
     candidates = _candidate_actions(hours_since_failure, retry_count, amount)
     scored = [
-        (action, *_score_candidate(action, models, failure_code, hours_since_failure, retry_count, amount))
+        (action, *_score_candidate(action, models, failure_code, hours_since_failure, retry_count, amount,
+                                    payment_method, is_subscription))
         for action in candidates
     ]
     scored.sort(key=lambda t: t[2], reverse=True)  # sort by expected_value desc

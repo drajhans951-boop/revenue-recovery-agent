@@ -12,12 +12,13 @@ measured money recovered with a full per-transaction audit trail.
 | Stage | File | What it does |
 |---|---|---|
 | 1. Detection | `generate_data.py` | Synthesizes `historical_outcomes.csv` (2000 past retries with known outcomes) and `failed_payments.csv` (the current batch of ~120 failed payments to act on). Also defines `true_success_probability`, the hidden ground-truth curve per failure code. |
-| 2. Diagnosis | `risk_model.py` | Fits one logistic regression **per failure code** on `[hours_since_failure, retry_count] -> success`, from the historical data. |
+| 2. Diagnosis | `risk_model.py` | Fits one logistic regression **per failure code** on `[hours_since_failure, retry_count, is_subscription, payment_method one-hots] -> success`, from the historical data. Also runs a diagnostic comparing accuracy with vs. without the extra features, per code. |
 | 3. Decision + guardrails | `policy.py` | Hard guardrails run first (no scoring at all if they fire); otherwise scores a fixed menu of actions by expected value and picks the best, subject to soft guardrails. |
 | 5. Messaging | `messenger.py` | Turns an already-decided action into a short customer message (English or Hinglish). Never makes contact decisions itself. |
 | 6. Orchestration | `main.py` | Runs the whole batch, simulates real outcomes against the hidden ground truth, prints a report, saves the audit trail CSV and a summary chart. |
 | — | `test_guardrails.py` | pytest suite that tries to break every guardrail. |
-| — | `calibration_check.py` | Train/test split, accuracy + calibration table for the risk model. |
+| — | `calibration_check.py` | 5-fold cross-validation: mean/std accuracy (overall and per code) vs. a naive per-code-average baseline, plus a fold-averaged calibration table. |
+| — | `fetch_test_mode_sample.py` | Optional: pulls a handful of real Razorpay Test Mode error responses, if test API keys are provided. |
 
 ## The math, in plain terms
 
@@ -25,16 +26,29 @@ measured money recovered with a full per-transaction audit trail.
 A single logistic regression with one "hours_since_failure" coefficient can
 only point in one direction. But `insufficient_funds` gets *more* likely to
 succeed the longer you wait (the customer tops up their account), while
-`network_timeout` gets *less* likely the longer you wait (it was a one-off
+`payment_timed_out` gets *less* likely the longer you wait (it was a one-off
 glitch — there's nothing to wait for). One shared coefficient can't be both
 positive and negative, so a shared model would learn the wrong direction for
 at least one code. Fitting one model per code lets each capture its own
 time-trend. `risk_model.py` prints a sanity table (P(success) at 0h/24h/48h
 per code) after training specifically to catch this class of bug.
 
-`lost_stolen_card` and `mandate_revoked` are never modeled statistically —
-they're hard-coded to `predict_proba() == 0.0` because they're compliance
-rules, not probabilities to be estimated.
+`debit_instrument_blocked` and `mandate_revoked` are never modeled
+statistically — they're hard-coded to `predict_proba() == 0.0` because
+they're compliance rules, not probabilities to be estimated.
+
+**Do the extra features (`payment_method`, `is_subscription`) actually help?**
+Only where the underlying reality supports it — `risk_model.py` prints a
+per-code accuracy comparison (original 2 features vs. +payment_method/
++is_subscription, on the same held-out split) rather than assuming more
+features are automatically better. `insufficient_funds` shows a measurable
+accuracy gain because it genuinely converts worse for subscription/autopay
+failures; `card_declined` shows none, honestly, because in this synthetic
+data a generic decline really doesn't vary by payment method. Codes with too
+few examples of one outcome class (e.g. `do_not_honor`) automatically fall
+back to the original 2 features even when the richer set is requested, rather
+than fitting one-hot columns on noise — `risk_model.py`'s
+`MIN_MINORITY_CLASS_FOR_EXTRA_FEATURES` gate.
 
 **Expected value formula**
 
@@ -52,7 +66,7 @@ candidate has the highest EV.
 **Guardrail logic**
 
 *Hard* (checked first, return immediately, no EV computed at all):
-1. `lost_stolen_card` / `mandate_revoked` → `compliance_stop`, always.
+1. `debit_instrument_blocked` / `mandate_revoked` → `compliance_stop`, always.
 2. `retry_count >= 3` → `give_up_unlikely`, regardless of odds.
 
 *Soft* (constrain which candidates are even considered / accepted):
@@ -72,6 +86,45 @@ simulates what *actually* happens to the current batch, it draws from
 function used to label the historical data, but never exposed to the model
 itself. This keeps the "real" outcome honest and non-circular.
 
+## Data provenance
+
+**This is SYNTHETIC data.** No real Razorpay transactions, merchants, or
+customers are involved anywhere in this project.
+
+What *is* real: the 6-code failure taxonomy is aligned to Razorpay's actual,
+publicly documented payment error reasons
+([payments error list](https://razorpay.com/docs/errors/payments/list/),
+[card errors](https://razorpay.com/docs/errors/payments/cards/)), cross-checked
+by fetching both pages directly:
+- `insufficient_funds` is Razorpay's exact real reason string, unchanged.
+- `payment_timed_out` and `card_declined` are real Razorpay reason strings we
+  renamed our invented codes to, since they're the closest documented
+  equivalents (`card_declined` is documented for cards specifically; we use
+  it here as our generic-decline analogue across all payment methods, since
+  Razorpay doesn't publish a method-agnostic decline reason).
+- `debit_instrument_blocked` is a real reason string ("blocked by the issuer
+  or by customers themselves") used here as the closest equivalent to a
+  lost/stolen card, though it's broader than that specifically.
+- `do_not_honor` and `mandate_revoked` are **kept as internal-only labels** —
+  neither page documents an exact equivalent (no distinct "do not honor"
+  reason, and only mandate *creation*-failure reasons exist, not a
+  revocation reason).
+
+What is **not** real: the success-rate curves in
+`generate_data.true_success_probability`, and every row in
+`historical_outcomes.csv`/`failed_payments.csv`, are simulated. Real
+production transaction data was not available for this hackathon, so no
+claim is made anywhere in this codebase that the probabilities, recovery
+rates, or revenue figures reflect actual Razorpay outcomes — only that the
+*category names* are grounded in Razorpay's real documentation.
+
+`fetch_test_mode_sample.py` is an optional, separate script that can pull a
+handful of *real* Razorpay Test Mode error responses (not synthetic) if you
+provide `RAZORPAY_TEST_KEY_ID`/`RAZORPAY_TEST_KEY_SECRET` test-mode
+credentials — see that file's docstring. It has nothing to do with the
+synthetic pipeline above; it exists purely so real documented error payloads
+can be inspected, if desired, alongside the synthetic ones.
+
 ## How to run
 
 ```bash
@@ -84,7 +137,10 @@ python generate_data.py          # Stage 1: creates historical_outcomes.csv, fai
 python risk_model.py             # Stage 2: fits models, prints the direction sanity table
 python main.py                   # Stage 6: runs the batch, prints report, writes audit trail + chart
 python -m pytest test_guardrails.py -v   # guardrail-breaking tests
-python calibration_check.py      # accuracy + calibration table
+python calibration_check.py      # 5-fold CV accuracy + calibration table
+
+# Optional, needs RAZORPAY_TEST_KEY_ID/RAZORPAY_TEST_KEY_SECRET env vars:
+python fetch_test_mode_sample.py
 ```
 
 Optional: set `ANTHROPIC_API_KEY` before running `main.py` to have
@@ -125,9 +181,16 @@ calibration tab, and a live guardrail-test-results tab.
    favorable timing) for a guardrail to fail, and shows it holds anyway. This
    is the evidence that compliance stops aren't just "usually low probability"
    but truly hard-coded, independent of the model.
-2. **The calibration table** (`calibration_check.py`) — shows that when the
-   model says "50-60% chance," the held-out test transactions in that bucket
-   really do succeed at close to that rate. This is the rigor evidence behind
-   the expected-value numbers, not just a plausible-looking demo.
-3. **The audit trail CSV** — every single decision, including the ones that
+2. **The 5-fold cross-validated calibration table** (`calibration_check.py`)
+   — mean/std accuracy across 5 folds (not a single lucky/unlucky split),
+   compared against a naive "just use the code's historical average" baseline
+   so it's clear the model is adding value, plus a fold-averaged calibration
+   table showing "50-60% predicted" really does mean "succeeds ~50-60% of the
+   time" among held-out transactions.
+3. **The feature-value comparison** (`risk_model.py`) — an honest per-code
+   accuracy comparison of the original 2-feature model against the richer
+   model with `payment_method`/`is_subscription` added, showing genuine gains
+   where the underlying data supports them and explicitly no gain where it
+   doesn't, rather than assuming more features are automatically better.
+4. **The audit trail CSV** — every single decision, including the ones that
    didn't pay off, with a plain-English reasoning string for why it was made.

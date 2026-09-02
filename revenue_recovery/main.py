@@ -38,7 +38,8 @@ ACTION_TIMING = {
 }
 
 
-def simulate_actual_outcome(action: str, failure_code: str, retry_count: int, rng: np.random.Generator) -> bool:
+def simulate_actual_outcome(action: str, failure_code: str, retry_count: int, rng: np.random.Generator,
+                             payment_method: str = "upi", is_subscription: bool = False) -> bool:
     """Draw the REAL outcome from the hidden-truth generator, independent of
     what the risk model predicted. Returns True if the action recovers the
     payment."""
@@ -47,11 +48,13 @@ def simulate_actual_outcome(action: str, failure_code: str, retry_count: int, rn
 
     if action in ACTION_TIMING:
         hours = ACTION_TIMING[action]
-        p_true = true_success_probability(failure_code, hours, retry_count)
+        p_true = true_success_probability(failure_code, hours, retry_count, payment_method, is_subscription)
     elif action == "send_reminder_alt_method":
-        p_true = true_success_probability(failure_code, 0, retry_count) * ALT_METHOD_MULTIPLIER
+        p_true = true_success_probability(failure_code, 0, retry_count, payment_method,
+                                           is_subscription) * ALT_METHOD_MULTIPLIER
     elif action == "escalate_human":
-        p_true = min(1.0, true_success_probability(failure_code, 0, retry_count) * ESCALATE_MULTIPLIER)
+        p_true = min(1.0, true_success_probability(failure_code, 0, retry_count, payment_method,
+                                                     is_subscription) * ESCALATE_MULTIPLIER)
     else:
         raise ValueError(f"Unknown action: {action}")
 
@@ -70,7 +73,8 @@ def run_pipeline():
         txn_dict = txn.to_dict()
         d = decide(txn_dict, models)
         message = generate_message(d.action, txn["preferred_lang"], txn["amount"], txn["failure_code"])
-        recovered = simulate_actual_outcome(d.action, txn["failure_code"], int(txn["retry_count"]), rng)
+        recovered = simulate_actual_outcome(d.action, txn["failure_code"], int(txn["retry_count"]), rng,
+                                             txn["payment_method"], bool(txn["is_subscription"]))
 
         rows.append(
             {
@@ -110,7 +114,7 @@ def print_report(audit: pd.DataFrame):
 
     hard_stops = (audit["action"] == "compliance_stop").sum()
     soft_giveups = (audit["action"] == "give_up_unlikely").sum()
-    print(f"\nCompliance hard-stops (lost/stolen card, revoked mandate): {hard_stops}")
+    print(f"\nCompliance hard-stops (blocked instrument, revoked mandate): {hard_stops}")
     print(f"Soft give-ups (max retries reached or odds too low):       {soft_giveups}")
 
     print("\n" + "-" * 72)
@@ -121,7 +125,8 @@ def print_report(audit: pd.DataFrame):
         print(f"\n[{r['txn_id']}] amount=Rs.{r['amount']:.2f} failure_code={r['failure_code']}")
         print(f"  action={r['action']}  P={r['predicted_prob']:.3f}  EV=Rs.{r['expected_value']:.2f}  recovered={r['recovered']}")
         print(f"  reasoning: {r['reasoning']}")
-        print(f"  message: {r['message']}")
+        message = r["message"] if isinstance(r["message"], str) else "(no message sent)"
+        print(f"  message: {message}")
     print("=" * 72)
 
 
