@@ -18,6 +18,12 @@ function setStatus(state, text) {
   document.getElementById("statusText").textContent = text;
 }
 
+function escapeHtml(s) {
+  const div = document.createElement("div");
+  div.textContent = s;
+  return div.innerHTML;
+}
+
 function appendTraceRow(row) {
   const trace = document.getElementById("trace");
   const hint = trace.querySelector(".empty-hint");
@@ -26,13 +32,17 @@ function appendTraceRow(row) {
   const el = document.createElement("div");
   el.className = "trace-row";
   el.innerHTML = `
-    <span class="icon">${iconFor(row)}</span>
-    <span class="txn">${row.txn_id}</span>
-    <span class="amount">${fmtRs(row.amount)}</span>
-    <span class="action">${row.action}</span>
-    <span class="prob">${(row.predicted_prob * 100).toFixed(1)}%</span>
-    <span class="ev">${fmtRs(row.expected_value)}</span>
-    <span class="reason" title="${row.reasoning.replace(/"/g, "&quot;")}">${row.reasoning}${row.message ? " &mdash; “" + row.message + "”" : ""}</span>
+    <div class="trace-stat-line">
+      <span class="icon">${iconFor(row)}</span>
+      <span class="txn">${escapeHtml(row.txn_id)}</span>
+      <span class="amount">${fmtRs(row.amount)}</span>
+      <span class="action">${escapeHtml(row.action)}</span>
+      <span class="prob">${(row.predicted_prob * 100).toFixed(1)}%</span>
+      <span class="ev">${fmtRs(row.expected_value)}</span>
+    </div>
+    <div class="trace-detail-line">
+      ${escapeHtml(row.reasoning)}${row.message ? ` <span class="message">&mdash; "${escapeHtml(row.message)}"</span>` : ""}
+    </div>
   `;
   trace.appendChild(el);
   trace.scrollTop = trace.scrollHeight;
