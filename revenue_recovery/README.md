@@ -7,11 +7,33 @@ compliance guardrails — whether and how to try to recover each one, phrases
 a customer message for whatever action was decided, and reports the actual
 measured money recovered with a full per-transaction audit trail.
 
+## Guardrails: bounded and gated by design
+
+This agent's recovery workflow is deliberately **bounded** — it can only ever
+pick from a fixed menu of five actions, never invent a new one — and
+**gated** by four guardrails that run before any expected-value ranking, so
+a bug or a bad prediction in the scoring logic can never override them:
+**(1) compliance stop** — `lost/stolen card` and `revoked mandate` failures
+are hard-coded to `compliance_stop` and never retried or contacted, under any
+circumstances, because retrying a blocked instrument or a revoked mandate is
+a compliance violation, not just a low-probability bet; **(2) a max-attempts
+ceiling** — `retry_count >= 3` forces `give_up_unlikely` regardless of
+predicted odds, so a customer is never contacted indefinitely; **(3) a
+4-hour cooldown** — no immediate re-contact is offered within 4 hours of a
+prior attempt, so the agent can't spam a customer; **(4) a give-up floor** —
+if even the best-scoring candidate action has `P(success) < 5%`, the agent
+gives up instead of spending money on a near-hopeless contact. Every one of
+these four is exercised by a dedicated pytest in `test_guardrails.py` that
+deliberately constructs the most tempting possible scenario (a huge amount,
+favorable-looking history) for the guardrail to fail, and confirms it holds
+anyway — this is the evidence that the bounds are structural, not just
+usually-true heuristics.
+
 ## Pipeline stages
 
 | Stage | File | What it does |
 |---|---|---|
-| 1. Detection | `generate_data.py` | Synthesizes `historical_outcomes.csv` (2000 past retries with known outcomes) and `failed_payments.csv` (the current batch of ~120 failed payments to act on). Also defines `true_success_probability`, the hidden ground-truth curve per failure code. |
+| 1. Detection | `generate_data.py` | Synthesizes `historical_outcomes.csv` (3000 past retries with known outcomes) and `failed_payments.csv` (the current batch of ~120 failed payments to act on). Also defines `true_success_probability`, the hidden ground-truth curve per failure code. |
 | 2. Diagnosis | `risk_model.py` | Fits one logistic regression **per failure code** on `[hours_since_failure, retry_count, is_subscription, payment_method one-hots] -> success`, from the historical data. Also runs a diagnostic comparing accuracy with vs. without the extra features, per code. |
 | 3. Decision + guardrails | `policy.py` | Hard guardrails run first (no scoring at all if they fire); otherwise scores a fixed menu of actions by expected value and picks the best, subject to soft guardrails. |
 | 5. Messaging | `messenger.py` | Turns an already-decided action into a short customer message (English or Hinglish). Never makes contact decisions itself. |

@@ -117,8 +117,16 @@ def true_success_probability(failure_code: str, hours_since_failure: float, retr
     return float(np.clip(p, 0.0, 1.0))
 
 
-def generate_historical_outcomes(n_rows: int = 2000, rng: np.random.Generator = None) -> pd.DataFrame:
-    """Past retry attempts with known outcomes, used to train the risk model."""
+def generate_historical_outcomes(n_rows: int = 3000, rng: np.random.Generator = None) -> pd.DataFrame:
+    """Past retry attempts with known outcomes, used to train the risk model.
+
+    n_rows=3000 (up from an original 2000): at 2000 rows, low-base-rate codes
+    like card_declined (~15-20% of rows, success rate under 10%) had too few
+    examples per retry_count bin for the fatigue effect's small absolute
+    swing to reliably beat sampling noise - risk_model.py's own sanity check
+    caught the fitted retry_count coefficient landing with the wrong sign on
+    a low-luck seed. More rows reduces that estimation variance directly.
+    """
     rng = rng or np.random.default_rng(RANDOM_SEED)
 
     # Skew towards the common, actionable codes; compliance codes are rarer
@@ -200,7 +208,7 @@ def main():
     rng_hist = np.random.default_rng(RANDOM_SEED)
     rng_batch = np.random.default_rng(RANDOM_SEED + 1)
 
-    historical = generate_historical_outcomes(2000, rng_hist)
+    historical = generate_historical_outcomes(3000, rng_hist)
     batch = generate_failed_payments(120, rng_batch)
 
     historical.to_csv("historical_outcomes.csv", index=False)

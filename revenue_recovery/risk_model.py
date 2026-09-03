@@ -27,6 +27,8 @@ failure code's training rows happened to contain.
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 
 HARD_ZERO_CODES = {"debit_instrument_blocked", "mandate_revoked"}
 MIN_ROWS_FOR_MODEL = 20
@@ -122,7 +124,15 @@ def fit_risk_models(historical_df: pd.DataFrame, use_extra_features: bool = True
 
         X = _build_feature_matrix(group, code_use_extra)
         y = outcomes
-        clf = LogisticRegression(max_iter=1000)
+        # StandardScaler before the logistic fit: hours_since_failure spans
+        # 0-72 while retry_count only spans 0-3 (and the one-hot columns are
+        # 0/1). Without scaling, L2 regularization penalizes both
+        # coefficients on the same raw scale, which can leave a low-signal
+        # feature like retry_count's fatigue effect unstable enough to fit
+        # the WRONG sign on a low-probability code (observed on
+        # card_declined before this fix) - scaling puts every feature on
+        # comparable footing before regularization sees it.
+        clf = make_pipeline(StandardScaler(), LogisticRegression(max_iter=1000))
         clf.fit(X, y)
         models[code] = CodeModel(kind="logistic", model=clf, use_extra_features=code_use_extra)
 
@@ -138,8 +148,11 @@ def predict_proba(models: dict, failure_code: str, hours_since_failure: float, r
 
 
 def print_sanity_table(models: dict):
-    """Print predicted P(success) at hours in {0, 24, 48} for every failure
-    code and flag whether the direction matches the intended dynamic."""
+    """Print predicted P(success) at hours in {0, 24, 48} (retry_count=0
+    held fixed) AND at retry_count in {0, 1, 2, 3} (hours=0 held fixed) for
+    every failure code, and flag whether each direction matches intuition -
+    both the time-dynamic per code, and the "extra retries reduce odds"
+    fatigue effect baked into every code in generate_data.py."""
     expectations = {
         "insufficient_funds": "UP (rises with time)",
         "payment_timed_out": "DOWN (decays with time)",
@@ -149,6 +162,7 @@ def print_sanity_table(models: dict):
         "mandate_revoked": "ZERO always",
     }
 
+    print("Across hours_since_failure (retry_count=0 held fixed):")
     print(f"{'failure_code':<24}{'h=0':>8}{'h=24':>8}{'h=48':>8}   expected direction")
     print("-" * 70)
     all_ok = True
@@ -168,9 +182,25 @@ def print_sanity_table(models: dict):
             ok = abs(p48 - p0) < 0.15
         all_ok = all_ok and ok
 
+    print("\nAcross retry_count (hours_since_failure=0 held fixed) - fatigue check:")
+    print(f"{'failure_code':<24}{'r=0':>8}{'r=1':>8}{'r=2':>8}{'r=3':>8}   expected direction")
+    print("-" * 70)
+    for code in expectations:
+        r0 = predict_proba(models, code, 0, 0)
+        r1 = predict_proba(models, code, 0, 1)
+        r2 = predict_proba(models, code, 0, 2)
+        r3 = predict_proba(models, code, 0, 3)
+        print(f"{code:<24}{r0:>8.3f}{r1:>8.3f}{r2:>8.3f}{r3:>8.3f}   DOWN (fatigue: more attempts -> lower odds)")
+
+        if code in HARD_ZERO_CODES:
+            ok = r0 == 0.0 and r3 == 0.0
+        else:
+            ok = r3 <= r0
+        all_ok = all_ok and ok
+
     print("-" * 70)
     if all_ok:
-        print("Sanity check PASSED: all directions match intuition.")
+        print("Sanity check PASSED: all directions match intuition (both hours and retries).")
     else:
         raise AssertionError("Sanity check FAILED: a model's direction does not match intuition.")
 

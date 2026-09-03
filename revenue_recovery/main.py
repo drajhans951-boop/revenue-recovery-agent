@@ -112,6 +112,18 @@ def print_report(audit: pd.DataFrame):
     print("\nAction breakdown:")
     print(audit["action"].value_counts().to_string())
 
+    print("\nFailure-reason breakdown:")
+    print(f"{'failure_code':<28}{'count':>7}{'at risk':>14}{'recovered':>14}{'rate':>8}")
+    by_code = audit.groupby("failure_code").agg(
+        count=("txn_id", "count"),
+        at_risk=("amount", "sum"),
+        recovered=("revenue_recovered", "sum"),
+    ).sort_values("at_risk", ascending=False)
+    for code, row in by_code.iterrows():
+        rate = row["recovered"] / row["at_risk"] if row["at_risk"] else 0.0
+        print(f"{code:<28}{int(row['count']):>7}{'Rs.'+format(row['at_risk'], ',.0f'):>14}"
+              f"{'Rs.'+format(row['recovered'], ',.0f'):>14}{rate:>8.1%}")
+
     hard_stops = (audit["action"] == "compliance_stop").sum()
     soft_giveups = (audit["action"] == "give_up_unlikely").sum()
     print(f"\nCompliance hard-stops (blocked instrument, revoked mandate): {hard_stops}")
