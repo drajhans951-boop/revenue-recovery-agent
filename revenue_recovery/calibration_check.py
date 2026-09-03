@@ -13,11 +13,10 @@ average rate, ignoring hours/retry/features entirely - is evaluated with the
 same folds, so it's clear whether the model is adding value over a plain
 lookup table or not.
 
-`train_test_split`/`evaluate`/`TEST_FRACTION`/`SPLIT_SEED`/`BUCKET_EDGES`/
-`BUCKET_LABELS` are kept as-is below (not removed) because risk_model.py's
+`iter_folds` is the single shared fold-splitting function: risk_model.py's
 own feature-comparison diagnostic and the web UI's /api/calibration endpoint
-both still use a single split for a fast, one-shot check - the 5-fold version
-here is the more rigorous, slower report this script itself now produces.
+both use it too, so every rigor number in this project is now computed on
+the same 5 folds rather than each caller inventing its own split.
 """
 import numpy as np
 import pandas as pd
@@ -33,13 +32,14 @@ BUCKET_EDGES = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
 BUCKET_LABELS = ["0-20%", "20-40%", "40-60%", "60-80%", "80-100%"]
 
 
-def train_test_split(df: pd.DataFrame, test_fraction: float, seed: int):
-    rng = np.random.default_rng(seed)
-    shuffled = df.sample(frac=1.0, random_state=seed).reset_index(drop=True)
-    n_test = int(len(shuffled) * test_fraction)
-    test = shuffled.iloc[:n_test]
-    train = shuffled.iloc[n_test:]
-    return train, test
+def iter_folds(df: pd.DataFrame, n_splits: int = N_FOLDS, seed: int = SPLIT_SEED):
+    """Yield (train_df, test_df) for each of n_splits folds. The one place
+    fold-splitting happens in this project - every cross-validated number
+    anywhere (this script's own report, risk_model.py's feature comparison,
+    the web UI's /api/calibration) is computed over these same folds."""
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    for train_idx, test_idx in kf.split(df):
+        yield df.iloc[train_idx], df.iloc[test_idx]
 
 
 def evaluate(models: dict, test_df: pd.DataFrame) -> pd.DataFrame:
@@ -69,13 +69,9 @@ def run_kfold_cv(historical_df: pd.DataFrame, n_splits: int = N_FOLDS, seed: int
     """Run n_splits-fold CV. Returns one result dict per fold with overall
     and per-code accuracy (model vs. naive baseline) and a calibration
     bucket table, all computed on that fold's held-out portion only."""
-    kf = KFold(n_splits=n_splits, shuffle=True, random_state=seed)
     fold_results = []
 
-    for train_idx, test_idx in kf.split(historical_df):
-        train = historical_df.iloc[train_idx]
-        test = historical_df.iloc[test_idx]
-
+    for train, test in iter_folds(historical_df, n_splits, seed):
         models = fit_risk_models(train)
         evaluated = evaluate(models, test)
         naive_probs = _naive_baseline_probs(train, test)
@@ -115,47 +111,85 @@ def run_kfold_cv(historical_df: pd.DataFrame, n_splits: int = N_FOLDS, seed: int
     return fold_results
 
 
-def print_kfold_report(fold_results: list):
-    n_folds = len(fold_results)
-
+def summarize_kfold(fold_results: list) -> dict:
+    """Aggregate per-fold results into plain, JSON-serializable numbers
+    (mean/std across folds). Shared by this script's console report and the
+    web UI's /api/calibration endpoint, so both surfaces report the exact
+    same numbers instead of the endpoint quietly drifting out of sync."""
     model_accs = np.array([f["model_acc"] for f in fold_results])
     naive_accs = np.array([f["naive_acc"] for f in fold_results])
 
-    print(f"{N_FOLDS}-fold cross-validation ({n_folds} folds actually run)")
-    print("=" * 72)
-    print("OVERALL ACCURACY (mean +/- std across folds)")
-    print(f"  Model (hours/retry/+features per code): {model_accs.mean():.3f} +/- {model_accs.std():.3f}")
-    print(f"  Naive baseline (per-code historical rate only): {naive_accs.mean():.3f} +/- {naive_accs.std():.3f}")
-    print(f"  Model advantage over naive baseline: {(model_accs.mean() - naive_accs.mean()):+.3f}")
-
     all_codes = sorted({code for f in fold_results for code in f["per_code"]})
-    print("\nPER-CODE ACCURACY (mean +/- std across folds where the code appeared)")
-    print(f"{'failure_code':<26}{'model acc':>18}{'naive acc':>18}{'advantage':>12}")
-    print("-" * 74)
+    per_code = {}
     for code in all_codes:
         m = np.array([f["per_code"][code]["model_acc"] for f in fold_results if code in f["per_code"]])
         n = np.array([f["per_code"][code]["naive_acc"] for f in fold_results if code in f["per_code"]])
-        print(f"{code:<26}{m.mean():>10.3f} +/-{m.std():>5.3f}{n.mean():>10.3f} +/-{n.std():>5.3f}"
-              f"{(m.mean() - n.mean()):>+12.3f}")
+        per_code[code] = {
+            "folds_present": int(sum(1 for f in fold_results if code in f["per_code"])),
+            "model_acc_mean": float(m.mean()),
+            "model_acc_std": float(m.std()),
+            "naive_acc_mean": float(n.mean()),
+            "naive_acc_std": float(n.std()),
+            "advantage": float(m.mean() - n.mean()),
+        }
 
-    print("\nCALIBRATION TABLE (predicted vs. actual, averaged across folds)")
-    print(f"{'bucket':<12}{'avg n/fold':>12}{'avg predicted':>16}{'avg actual rate':>18}")
-    print("-" * 58)
+    buckets = []
     for label in BUCKET_LABELS:
         ns = np.array([f["bucket_stats"][label]["n"] for f in fold_results])
         preds = np.array([f["bucket_stats"][label]["avg_predicted"] for f in fold_results])
         actuals = np.array([f["bucket_stats"][label]["actual_rate"] for f in fold_results])
         if np.all(ns == 0):
-            print(f"{label:<12}{0:>12}{'--':>16}{'--':>18}")
-            continue
-        print(f"{label:<12}{ns.mean():>12.1f}{np.nanmean(preds):>16.3f}{np.nanmean(actuals):>18.3f}")
+            buckets.append({"bucket": label, "avg_n": 0.0, "avg_predicted": None, "actual_rate": None})
+        else:
+            buckets.append({
+                "bucket": label,
+                "avg_n": float(ns.mean()),
+                "avg_predicted": float(np.nanmean(preds)),
+                "actual_rate": float(np.nanmean(actuals)),
+            })
+
+    return {
+        "n_folds": len(fold_results),
+        "model_acc_mean": float(model_accs.mean()),
+        "model_acc_std": float(model_accs.std()),
+        "naive_acc_mean": float(naive_accs.mean()),
+        "naive_acc_std": float(naive_accs.std()),
+        "advantage": float(model_accs.mean() - naive_accs.mean()),
+        "per_code": per_code,
+        "buckets": buckets,
+    }
+
+
+def print_kfold_report(summary: dict):
+    print(f"{summary['n_folds']}-fold cross-validation")
+    print("=" * 72)
+    print("OVERALL ACCURACY (mean +/- std across folds)")
+    print(f"  Model (hours/retry/+features per code): {summary['model_acc_mean']:.3f} +/- {summary['model_acc_std']:.3f}")
+    print(f"  Naive baseline (per-code historical rate only): {summary['naive_acc_mean']:.3f} +/- {summary['naive_acc_std']:.3f}")
+    print(f"  Model advantage over naive baseline: {summary['advantage']:+.3f}")
+
+    print("\nPER-CODE ACCURACY (mean +/- std across folds where the code appeared)")
+    print(f"{'failure_code':<26}{'model acc':>18}{'naive acc':>18}{'advantage':>12}")
+    print("-" * 74)
+    for code, s in summary["per_code"].items():
+        print(f"{code:<26}{s['model_acc_mean']:>10.3f} +/-{s['model_acc_std']:>5.3f}"
+              f"{s['naive_acc_mean']:>10.3f} +/-{s['naive_acc_std']:>5.3f}{s['advantage']:>+12.3f}")
+
+    print("\nCALIBRATION TABLE (predicted vs. actual, averaged across folds)")
+    print(f"{'bucket':<12}{'avg n/fold':>12}{'avg predicted':>16}{'avg actual rate':>18}")
+    print("-" * 58)
+    for b in summary["buckets"]:
+        if b["avg_predicted"] is None:
+            print(f"{b['bucket']:<12}{0:>12}{'--':>16}{'--':>18}")
+        else:
+            print(f"{b['bucket']:<12}{b['avg_n']:>12.1f}{b['avg_predicted']:>16.3f}{b['actual_rate']:>18.3f}")
 
 
 def main():
     historical = pd.read_csv("historical_outcomes.csv")
     print(f"Total historical rows: {len(historical)}")
     fold_results = run_kfold_cv(historical, N_FOLDS, SPLIT_SEED)
-    print_kfold_report(fold_results)
+    print_kfold_report(summarize_kfold(fold_results))
 
 
 if __name__ == "__main__":

@@ -115,32 +115,55 @@ async function newBatch() {
   trace.innerHTML = '<div class="empty-hint">Click "Run Agent" to watch it process the batch, transaction by transaction.</div>';
 }
 
+function pct(x) {
+  return x === null || x === undefined ? "—" : (x * 100).toFixed(1) + "%";
+}
+
 async function loadCalibration() {
   const el = document.getElementById("calibrationContent");
-  el.innerHTML = '<div class="empty-hint">Running train/test split and refitting on held-out data…</div>';
+  el.innerHTML = '<div class="empty-hint">Running 5-fold cross-validation, refitting per-code models on each fold…</div>';
   const res = await fetch("/api/calibration");
   const data = await res.json();
 
-  const rows = data.buckets
+  const bucketRows = data.buckets
     .map(
       (b) => `
       <tr>
         <td>${b.bucket}</td>
-        <td>${b.n}</td>
-        <td>${b.avg_predicted !== null ? (b.avg_predicted * 100).toFixed(1) + "%" : "—"}</td>
-        <td>${b.actual_rate !== null ? (b.actual_rate * 100).toFixed(1) + "%" : "—"}</td>
+        <td>${b.avg_n.toFixed(1)}</td>
+        <td>${pct(b.avg_predicted)}</td>
+        <td>${pct(b.actual_rate)}</td>
+      </tr>`
+    )
+    .join("");
+
+  const codeRows = Object.entries(data.per_code)
+    .map(
+      ([code, s]) => `
+      <tr>
+        <td>${code}</td>
+        <td>${pct(s.model_acc_mean)} &plusmn;${(s.model_acc_std * 100).toFixed(1)}</td>
+        <td>${pct(s.naive_acc_mean)} &plusmn;${(s.naive_acc_std * 100).toFixed(1)}</td>
+        <td style="color:${s.advantage > 0.001 ? "var(--green)" : "var(--text-dim)"}">${s.advantage >= 0 ? "+" : ""}${(s.advantage * 100).toFixed(1)}pp</td>
       </tr>`
     )
     .join("");
 
   el.innerHTML = `
     <p style="font-size:12px;color:var(--text-dim);font-family:-apple-system,sans-serif;">
-      Train rows: ${data.train_rows} &middot; Test rows: ${data.test_rows} &middot;
-      Overall accuracy: <strong style="color:var(--gold)">${(data.accuracy * 100).toFixed(1)}%</strong>
+      ${data.n_folds}-fold CV &middot; Model accuracy:
+      <strong style="color:var(--gold)">${pct(data.model_acc_mean)} &plusmn;${(data.model_acc_std * 100).toFixed(1)}</strong>
+      &middot; Naive per-code baseline: ${pct(data.naive_acc_mean)} &plusmn;${(data.naive_acc_std * 100).toFixed(1)}
+      &middot; Advantage: <strong style="color:${data.advantage > 0.001 ? "var(--green)" : "var(--text-dim)"}">${data.advantage >= 0 ? "+" : ""}${(data.advantage * 100).toFixed(1)}pp</strong>
     </p>
     <table>
-      <thead><tr><th>Predicted bucket</th><th>n</th><th>Avg predicted</th><th>Actual success rate</th></tr></thead>
-      <tbody>${rows}</tbody>
+      <thead><tr><th>Failure code</th><th>Model acc</th><th>Naive acc</th><th>Advantage</th></tr></thead>
+      <tbody>${codeRows}</tbody>
+    </table>
+    <p style="font-size:12px;color:var(--text-dim);font-family:-apple-system,sans-serif;margin-top:16px;">Calibration (predicted vs. actual, averaged across folds):</p>
+    <table>
+      <thead><tr><th>Predicted bucket</th><th>Avg n/fold</th><th>Avg predicted</th><th>Actual success rate</th></tr></thead>
+      <tbody>${bucketRows}</tbody>
     </table>
   `;
 }

@@ -187,52 +187,78 @@ def _accuracy(models: dict, df: pd.DataFrame) -> float:
 
 def print_feature_comparison(historical: pd.DataFrame):
     """Diagnostic: does adding payment_method/is_subscription actually help,
-    per failure code - or are we just fitting noise? Uses the same train/test
-    split calibration_check.py uses, so this is a fair apples-to-apples check,
-    not fit-on-everything-then-brag numbers."""
-    from calibration_check import train_test_split, TEST_FRACTION, SPLIT_SEED
+    per failure code - or are we just fitting noise? Runs the SAME 5-fold CV
+    calibration_check.py uses (via its shared iter_folds), refitting both a
+    basic and an extended model set per fold, so this is a properly
+    cross-validated comparison rather than one split's numbers - a single
+    split is exactly the "lucky/unlucky" problem calibration_check.py's own
+    k-fold report exists to avoid, so this diagnostic shouldn't have a
+    weaker standard of evidence than that one."""
+    from calibration_check import iter_folds, N_FOLDS, SPLIT_SEED
 
-    train, test = train_test_split(historical, TEST_FRACTION, SPLIT_SEED)
-    basic_models = fit_risk_models(train, use_extra_features=False)
-    extended_models = fit_risk_models(train, use_extra_features=True)
+    # code -> list of (acc_basic, acc_extended, n, was_gated_off), one entry per fold
+    per_code_folds = {}
+    overall_basic_accs = []
+    overall_extended_accs = []
 
-    print("\nFeature comparison: original 2 features vs. +payment_method/+is_subscription")
-    print(f"{'failure_code':<26}{'n_test':>8}{'acc_basic':>12}{'acc_extended':>14}{'delta':>10}")
-    print("-" * 70)
+    for train, test in iter_folds(historical, N_FOLDS, SPLIT_SEED):
+        basic_models = fit_risk_models(train, use_extra_features=False)
+        extended_models = fit_risk_models(train, use_extra_features=True)
 
-    codes = sorted(test["failure_code"].unique())
+        overall_basic_accs.append(_accuracy(basic_models, test))
+        overall_extended_accs.append(_accuracy(extended_models, test))
+
+        for code in sorted(test["failure_code"].unique()):
+            subset = test[test["failure_code"] == code]
+            acc_basic = _accuracy(basic_models, subset)
+            acc_extended = _accuracy(extended_models, subset)
+            model = extended_models.get(code)
+            was_gated_off = model is not None and model.kind == "logistic" and not model.use_extra_features
+            per_code_folds.setdefault(code, []).append((acc_basic, acc_extended, len(subset), was_gated_off))
+
+    print(f"\nFeature comparison ({N_FOLDS}-fold CV): original 2 features vs. +payment_method/+is_subscription")
+    print(f"{'failure_code':<26}{'acc_basic':>16}{'acc_extended':>18}{'delta':>10}{'gated':>8}")
+    print("-" * 80)
+
     no_improvement_notes = []
-    gated_notes = []
-    for code in codes:
-        subset = test[test["failure_code"] == code]
-        acc_basic = _accuracy(basic_models, subset)
-        acc_extended = _accuracy(extended_models, subset)
-        delta = acc_extended - acc_basic
-        print(f"{code:<26}{len(subset):>8}{acc_basic:>12.3f}{acc_extended:>14.3f}{delta:>+10.3f}")
+    partially_gated_notes = []
+    for code, folds in per_code_folds.items():
+        basics = np.array([f[0] for f in folds])
+        extendeds = np.array([f[1] for f in folds])
+        gated_count = sum(1 for f in folds if f[3])
+        delta = extendeds.mean() - basics.mean()
 
-        model = extended_models.get(code)
-        was_gated_off = model is not None and model.kind == "logistic" and not model.use_extra_features
-        if was_gated_off:
-            gated_notes.append(code)
-        elif delta <= 1e-9:
+        gated_label = f"{gated_count}/{len(folds)}" if gated_count else "no"
+        print(f"{code:<26}{basics.mean():>9.3f} +/-{basics.std():>4.2f}"
+              f"{extendeds.mean():>11.3f} +/-{extendeds.std():>4.2f}{delta:>+10.3f}{gated_label:>8}")
+
+        if 0 < gated_count < len(folds):
+            partially_gated_notes.append(f"{code} ({gated_count}/{len(folds)} folds)")
+        elif gated_count == 0 and delta <= 1e-9:
             no_improvement_notes.append(code)
 
-    overall_basic = _accuracy(basic_models, test)
-    overall_extended = _accuracy(extended_models, test)
-    print("-" * 70)
-    print(f"{'OVERALL':<26}{len(test):>8}{overall_basic:>12.3f}{overall_extended:>14.3f}"
-          f"{overall_extended - overall_basic:>+10.3f}")
+    overall_basic = np.array(overall_basic_accs)
+    overall_extended = np.array(overall_extended_accs)
+    print("-" * 80)
+    print(f"{'OVERALL':<26}{overall_basic.mean():>9.3f} +/-{overall_basic.std():>4.2f}"
+          f"{overall_extended.mean():>11.3f} +/-{overall_extended.std():>4.2f}"
+          f"{(overall_extended.mean() - overall_basic.mean()):>+10.3f}")
 
-    if gated_notes:
-        print(f"\nNote: extra features were AUTOMATICALLY DISABLED for: {', '.join(gated_notes)}"
-              f" (fewer than {MIN_MINORITY_CLASS_FOR_EXTRA_FEATURES} examples of the minority"
-              " outcome class - not enough support to trust the extra one-hot columns, so these"
-              " fall back to the original 2-feature model even in 'extended' mode).")
+    fully_gated = [c for c, folds in per_code_folds.items() if all(f[3] for f in folds)]
+    if fully_gated:
+        print(f"\nNote: extra features were AUTOMATICALLY DISABLED in every fold for: {', '.join(fully_gated)}"
+              f" (fewer than {MIN_MINORITY_CLASS_FOR_EXTRA_FEATURES} examples of the minority outcome"
+              " class in that fold's training data - not enough support to trust the extra one-hot"
+              " columns, so these fall back to the original 2-feature model even in 'extended' mode).")
+    if partially_gated_notes:
+        print(f"\nNote: extra features were gated off in SOME folds only for: {', '.join(partially_gated_notes)}"
+              " - this code sits right at the minority-class support threshold, so whether the richer"
+              " model is even attempted can depend on which rows a given fold happened to draw.")
     if no_improvement_notes:
-        print(f"\nNote: no accuracy improvement from the new features for: {', '.join(no_improvement_notes)}.")
-        print("This is expected for card_declined (the synthetic ground truth deliberately does not")
-        print("vary by payment_method/is_subscription for this code) and trivially expected for the")
-        print("two hard-zero compliance codes - not force-fitting noise.")
+        print(f"\nNote: no accuracy improvement from the new features (features used, still no gain) for: "
+              f"{', '.join(no_improvement_notes)}. This is expected for card_declined (the synthetic ground"
+              " truth deliberately does not vary by payment_method/is_subscription for this code) and"
+              " trivially expected for the hard-zero compliance codes - not force-fitting noise.")
 
 
 def main():

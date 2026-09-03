@@ -28,14 +28,7 @@ from risk_model import fit_risk_models  # noqa: E402
 from policy import decide  # noqa: E402
 from messenger import generate_message  # noqa: E402
 from main import simulate_actual_outcome  # noqa: E402
-from calibration_check import (  # noqa: E402
-    train_test_split,
-    evaluate,
-    TEST_FRACTION,
-    SPLIT_SEED,
-    BUCKET_EDGES,
-    BUCKET_LABELS,
-)
+from calibration_check import run_kfold_cv, summarize_kfold, N_FOLDS, SPLIT_SEED  # noqa: E402
 
 HIST_CSV = REVENUE_RECOVERY_DIR / "historical_outcomes.csv"
 BATCH_CSV = REVENUE_RECOVERY_DIR / "failed_payments.csv"
@@ -142,32 +135,14 @@ def api_audit_csv():
 
 @app.get("/api/calibration")
 def api_calibration():
+    """Same 5-fold CV calibration_check.py's own CLI report uses (via the
+    shared run_kfold_cv/summarize_kfold) - this used to run a separate,
+    quicker single train/test split, which meant the web UI could show a
+    different, less rigorous number than what `python calibration_check.py`
+    printed in the terminal. Now both surfaces report identical numbers."""
     historical = pd.read_csv(HIST_CSV)
-    train, test = train_test_split(historical, TEST_FRACTION, SPLIT_SEED)
-    models = fit_risk_models(train)
-    evaluated = evaluate(models, test)
-
-    predicted_class = (evaluated["predicted_prob"] >= 0.5).astype(int)
-    accuracy = float((predicted_class == evaluated["success"]).mean())
-
-    buckets = pd.cut(evaluated["predicted_prob"], bins=BUCKET_EDGES, labels=BUCKET_LABELS, include_lowest=True)
-    table = []
-    for label in BUCKET_LABELS:
-        subset = evaluated[buckets == label]
-        n = len(subset)
-        table.append({
-            "bucket": label,
-            "n": int(n),
-            "avg_predicted": float(subset["predicted_prob"].mean()) if n else None,
-            "actual_rate": float(subset["success"].mean()) if n else None,
-        })
-
-    return {
-        "train_rows": len(train),
-        "test_rows": len(test),
-        "accuracy": accuracy,
-        "buckets": table,
-    }
+    fold_results = run_kfold_cv(historical, N_FOLDS, SPLIT_SEED)
+    return summarize_kfold(fold_results)
 
 
 @app.get("/api/guardrail-tests")
