@@ -153,7 +153,11 @@ def api_guardrail_tests():
         capture_output=True,
         text=True,
     )
-    lines = [l for l in result.stdout.splitlines() if "PASSED" in l or "FAILED" in l]
+    # Only the per-test progress lines (e.g. "test_x.py::test_y PASSED [ 14%]") -
+    # pytest also repeats each failed test's name in a "short test summary info"
+    # footer at the end (just "FAILED test_x.py::test_y", no "%]"), which would
+    # otherwise get double-counted as a second test.
+    lines = [l for l in result.stdout.splitlines() if ("PASSED" in l or "FAILED" in l) and "%]" in l]
     tests = []
     for line in lines:
         name = line.split("::", 1)[1].split(" ")[0] if "::" in line else line

@@ -1,13 +1,14 @@
 """
 Guardrail-breaking tests. Each test deliberately builds the MOST favorable
 possible circumstances for the guardrail to fail, and asserts it holds anyway.
-Fits the risk model on the real generated historical data so these are true
-end-to-end guardrail checks, not guardrails tested against a mocked model.
+Most tests fit the risk model on the real generated historical data so these
+are true end-to-end guardrail checks, not guardrails tested against a mocked
+model. The one exception is the low-odds test below - see its comment for why.
 """
 import pandas as pd
 import pytest
 
-from risk_model import fit_risk_models
+from risk_model import fit_risk_models, CodeModel
 from policy import decide
 
 
@@ -63,8 +64,22 @@ def test_max_retries_reached_gives_up_regardless_of_amount_or_code(models, failu
 
 
 def test_low_odds_across_the_board_gives_up_instead_of_a_low_odds_retry(models):
-    # do_not_honor at hours=24/retry=1 pushes every candidate's probability
-    # (even the best one) below the 5% action threshold.
+    # Uses a deterministic stub for do_not_honor instead of the live-fitted
+    # model. do_not_honor's TRUE probability is only ~2-6%, close enough to
+    # the 5% give-up threshold that statistical fitting noise on a random
+    # historical draw can occasionally push the FITTED estimate over it
+    # (confirmed empirically: escalate_human's 1.1x probability boost on a
+    # large amount tipped this over 5% on ~10% of random re-generations of
+    # historical_outcomes.csv during testing) - making this test flaky
+    # depending on what happened to be on disk, e.g. after clicking "New
+    # Batch" in the web UI. This test's job is to prove policy.py's
+    # low-odds override LOGIC holds regardless of amount, not to re-prove
+    # risk_model.py's statistical accuracy (calibration_check.py already
+    # covers that) - so it swaps in a fixed-rate stub for do_not_honor only,
+    # leaving every other code's real fitted model untouched.
+    stubbed_models = dict(models)
+    stubbed_models["do_not_honor"] = CodeModel(kind="average", rate=0.02)
+
     txn = dict(
         txn_id="BREAK4",
         amount=50000,  # large amount, tempting for EV if the guardrail didn't exist
@@ -72,7 +87,7 @@ def test_low_odds_across_the_board_gives_up_instead_of_a_low_odds_retry(models):
         hours_since_failure=24,
         retry_count=1,
     )
-    d = decide(txn, models)
+    d = decide(txn, stubbed_models)
     assert d.action == "give_up_unlikely"
     assert d.predicted_prob < 0.05
 
