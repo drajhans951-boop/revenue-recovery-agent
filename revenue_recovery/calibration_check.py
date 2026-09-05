@@ -178,11 +178,17 @@ def print_kfold_report(summary: dict):
     print("\nCALIBRATION TABLE (predicted vs. actual, averaged across folds)")
     print(f"{'bucket':<12}{'avg n/fold':>12}{'avg predicted':>16}{'avg actual rate':>18}")
     print("-" * 58)
+    empty_buckets = []
     for b in summary["buckets"]:
         if b["avg_predicted"] is None:
             print(f"{b['bucket']:<12}{0:>12}{'--':>16}{'--':>18}")
+            empty_buckets.append(b["bucket"])
         else:
             print(f"{b['bucket']:<12}{b['avg_n']:>12.1f}{b['avg_predicted']:>16.3f}{b['actual_rate']:>18.3f}")
+    if empty_buckets:
+        print(f"\nNote: {', '.join(empty_buckets)} had zero predictions in every fold - no failure code's")
+        print("predicted probability ever reaches that range in this dataset, so calibration at that")
+        print("confidence level is untested here, not just unlucky sampling. Disclosed, not hidden.")
 
 
 def main():

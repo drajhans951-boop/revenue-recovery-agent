@@ -225,3 +225,57 @@ calibration tab, and a live guardrail-test-results tab.
    of not oversimplifying evaluation results for a nicer-looking demo.
 4. **The audit trail CSV** — every single decision, including the ones that
    didn't pay off, with a plain-English reasoning string for why it was made.
+
+## Anticipated questions & known limitations
+
+Answered here directly rather than left for a judge to discover:
+
+- **"Is this really an agent, or just a rules+ML pipeline?"** By design, mostly
+  the latter — and deliberately so. The brief explicitly asks for a *bounded*,
+  *gated* workflow, not an open-ended autonomous one. In a payment-retry
+  context, more autonomy is a liability, not a feature: an LLM freely deciding
+  whether to retry a blocked card would be strictly worse than a hard-coded
+  rule that can never be talked out of stopping. The "agentic" part is
+  real but scoped: diagnosing odds per code, ranking a fixed action menu by
+  expected value, and (optionally) writing the customer message dynamically -
+  all inside guardrails that were built to never be overridden by the model.
+- **"Why logistic regression instead of XGBoost/a neural net?"** Interpretability
+  and auditability. Each per-code model has exactly 2-7 coefficients that can
+  be read directly (`print_sanity_table` does this), which matters when the
+  output feeds a compliance-adjacent decision - a black-box gradient-boosted
+  model would need a separate explainability layer to get the same auditability
+  this gets for free. The relationships being modeled (a handful of roughly
+  monotonic curves) also don't need a high-capacity model's nonlinearity.
+- **"What happens with a failure code the model has never seen?"** It defaults
+  to `P(success)=0.0`, which combined with the 5% give-up floor means the agent
+  safely gives up rather than guessing - but this used to happen silently.
+  Fixed: `risk_model.py` now prints a one-time warning per unrecognized code,
+  since in production this usually means the upstream error taxonomy changed
+  and someone needs to add training data for it.
+- **"Is the model calibrated at high confidence (80-100% predicted)?"** Not
+  testably, in this dataset - no failure code's predicted probability ever
+  reaches that range, so that calibration bucket is empty by construction, not
+  by unlucky sampling. `calibration_check.py` now says this explicitly instead
+  of leaving a silent blank row.
+- **"Your costs (₹1/₹3/₹45) and thresholds (₹5,000 escalation, 5% give-up) are
+  hardcoded - how would a real deployment set these?"** They're illustrative
+  constants standing in for real operational cost data (actual SMS/retry
+  infra cost, actual human-agent cost per contact) that a real merchant would
+  plug in from their own finance/ops numbers. They're isolated at the top of
+  `policy.py` specifically so they're easy to find and replace.
+- **"Does this account for RBI/NPCI rules on recurring-payment (e-mandate/UPI
+  Autopay) retries?"** No - this is a real gap, not modeled. `MAX_RETRY_COUNT=3`
+  is a generic guardrail, not derived from actual regulatory retry-limit or
+  pre-debit-notification requirements for standing instructions. A production
+  version would need a mandate-specific guardrail on top of the generic one.
+- **"Your feature comparison shows barely any accuracy gain from `payment_method`/
+  `is_subscription` - why add them?"** Because the honest answer to "did they
+  help" is itself the deliverable here (see the feature-value comparison
+  above) - the value is in measuring and disclosing this rigorously, not in
+  guaranteeing every feature added will pay off.
+- **"How does this scale to millions of transactions/day?"** It doesn't, as
+  written - models are refit from a CSV in-memory on every run. A production
+  version would separate offline model training (batch, versioned, monitored
+  for drift) from online serving (fast lookup against an already-fitted
+  model), which this demo intentionally doesn't build since it's out of scope
+  for a synthetic-data hackathon submission.

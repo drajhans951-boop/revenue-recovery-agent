@@ -139,10 +139,28 @@ def fit_risk_models(historical_df: pd.DataFrame, use_extra_features: bool = True
     return models
 
 
+_warned_unknown_codes = set()
+
+
 def predict_proba(models: dict, failure_code: str, hours_since_failure: float, retry_count: int,
                    payment_method: str = "upi", is_subscription: bool = False) -> float:
     model = models.get(failure_code)
     if model is None:
+        # Safe default: an unrecognized failure_code (never seen in the
+        # historical training data) gets P(success)=0, which - combined with
+        # policy.py's give-up-below-5% guardrail - means the agent gives up
+        # rather than guessing on a code it has no evidence about. That's the
+        # right conservative behavior, but it must not happen SILENTLY: an
+        # unknown code showing up in production usually means the upstream
+        # taxonomy changed (e.g. a new bank/NPCI error reason) and someone
+        # needs to know to add training data for it, not have the agent
+        # quietly write off every transaction with that code forever.
+        if failure_code not in _warned_unknown_codes:
+            _warned_unknown_codes.add(failure_code)
+            print(f"[risk_model] WARNING: unrecognized failure_code='{failure_code}' - no model "
+                  f"was fit for it (not in historical_outcomes.csv). Defaulting to P(success)=0.0, "
+                  f"which will cause the agent to give up on it. Add historical examples of this "
+                  f"code and refit to get a real estimate instead.")
         return 0.0
     return model.predict_proba(hours_since_failure, retry_count, payment_method, is_subscription)
 
