@@ -3,6 +3,7 @@
 **AI Payment Recovery Agent** — built for Razorpay Buildathon, Track 03: *AI Revenue Recovery*.
 
 🔗 **Live demo**: [https://revora-oofj.onrender.com](https://revora-oofj.onrender.com)
+🎥 **Demo video**: [https://youtu.be/WJuedwGSW0I](https://youtu.be/WJuedwGSW0I)
 📦 **Repo**: [github.com/drajhans951-boop/revenue-recovery-agent](https://github.com/drajhans951-boop/revenue-recovery-agent)
 
 > First visit to the live demo may take 30-50s to wake up (free-tier hosting sleeps after inactivity) — refresh if the first load times out.
@@ -328,6 +329,7 @@ Deployment is defined entirely in [`render.yaml`](render.yaml) — a one-click B
 3. **The feature-value comparison** — an honest report on whether richer features actually helped, including admitting when they barely did.
 4. **The audit trail CSV** — every decision, including the ones that didn't pay off, with a plain-English reasoning string.
 5. **The live web demo** — watch the agent process a batch transaction-by-transaction in real time via the streaming trace.
+6. **The [demo video](https://youtu.be/WJuedwGSW0I)** — a recorded walkthrough of the above, if you'd rather watch than run it yourself.
 
 ## Anticipated questions & known limitations
 
