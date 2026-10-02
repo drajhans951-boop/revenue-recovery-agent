@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: revora
+    runtime: python
+    rootDir: revenue_recovery/webapp
+    buildCommand: pip install --upgrade pip && pip install pandas numpy scikit-learn matplotlib fastapi "uvicorn[standard]" anthropic pytest
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    plan: free
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
